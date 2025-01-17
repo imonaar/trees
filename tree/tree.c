@@ -1,6 +1,9 @@
 #include "tree.h"
 
 static void destroy_directory(Tree *tree, Directory *dir);
+static char **split_path(const char *path, int *count);
+static void free_path_components(char **components, int count);
+static Directory *find_child_directory(Directory *parent, const char *name);
 
 // utility functions
 uint32_t get_directory_size(Directory *dir)
@@ -59,18 +62,82 @@ const char *get_node_name(Node *node)
     return node->name;
 }
 
-/*
- * Initializes a new tree structure with the specified comparison and destruction functions.
+Directory *get_parent_directory(Directory *dir)
+{
+    if (dir == NULL || dir->base.parent == NULL)
+        return NULL;
+    return (Directory *)dir->base.parent;
+}
+
+// Helper function to split and normalize path
+static char **split_path(const char *path, int *count)
+{
+    char *path_copy = strdup(path);
+    char **components = malloc(sizeof(char *) * 256); // Max 256 components
+    *count = 0;
+
+    // Skip leading slash
+    char *token = strtok(path_copy, "/");
+    while (token != NULL && *count < 256)
+    {
+        components[*count] = strdup(token);
+        (*count)++;
+        token = strtok(NULL, "/");
+    }
+
+    free(path_copy);
+    return components;
+}
+
+// Helper to free split path
+static void free_path_components(char **components, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        free(components[i]);
+    }
+    free(components);
+}
+
+/**
+ * @brief Finds a child directory with the specified name within a parent directory
  *
- * Parameters:
- *   tree - Pointer to the tree structure to initialize
- *   compare - Function pointer for comparing node values (can be NULL)
- *   destroy - Function pointer for cleaning up node values (can be NULL)
+ * @param parent The parent directory to search in
+ * @param name The name of the child directory to find
+ * @return Directory* Pointer to the found directory, or NULL if not found
  *
- * Notes:
- *   - Sets initial values for root, directory count, and total size to zero
- *   - Stores the provided function pointers for later use
- *   - Does not allocate any memory
+ * @note This is an internal helper function used by create_directory and create_nested_directory
+ * @warning Not thread-safe, assumes parent and name are valid
+ */
+Directory *find_child_directory(Directory *parent, const char *name)
+{
+    if (!parent || !name)
+        return NULL;
+
+    Directory *child = parent->first_child;
+    while (child != NULL)
+    {
+        if (strcmp(child->base.name, name) == 0)
+        {
+            return child;
+        }
+        child = child->next_dir;
+    }
+    return NULL;
+}
+
+/**
+ * @brief Initializes a new tree structure with the specified comparison and destruction functions.
+ *
+ * @param tree Pointer to the tree structure to initialize
+ * @param compare Function pointer for comparing node values (can be NULL)
+ * @param destroy Function pointer for cleaning up node values (can be NULL)
+ *
+ * @note This function sets initial values for root, directory count, and total size to zero.
+ *       It stores the provided function pointers for later use.
+ *       This function does not allocate any memory.
+ *
+ * @warning Ensure that the tree pointer is valid before calling this function.
  */
 void init_tree(Tree *tree, int (*compare)(void *key1, void *key2), void (*destroy)(void *data))
 {
@@ -81,17 +148,17 @@ void init_tree(Tree *tree, int (*compare)(void *key1, void *key2), void (*destro
     tree->compare = compare;
 }
 
-/*
- * Destroys the entire tree structure and frees all associated memory.
+/**
+ * @brief Destroys the entire tree structure and frees all associated memory.
  *
- * Parameters:
- *   tree - Pointer to the tree structure to destroy
+ * @param tree Pointer to the tree structure to destroy
  *
- * Notes:
- *   - Recursively destroys all directories and their contents
- *   - Resets all tree counters to zero
- *   - Safe to call with NULL pointer
- *   - Uses destroy_directory for recursive cleanup
+ * @note This function recursively destroys all directories and their contents,
+ *       resets all tree counters to zero, and is safe to call with a NULL pointer.
+ *       It uses destroy_directory for recursive cleanup.
+ *
+ * @warning Ensure that no other references to the tree exist before calling this function
+ *          to avoid memory access violations.
  */
 void destroy_tree(Tree *tree)
 {
@@ -104,18 +171,17 @@ void destroy_tree(Tree *tree)
     tree->total_size = 0;
 }
 
-/*
- * Helper function that recursively destroys a directory and all its contents.
+/**
+ * @brief Helper function that recursively destroys a directory and all its contents.
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   dir - Pointer to the directory to destroy
+ * @param tree Pointer to the tree structure
+ * @param dir Pointer to the directory to destroy
  *
- * Notes:
- *   - Processes subdirectories first, then leaves, then the directory itself
- *   - Uses depth-first traversal to ensure proper cleanup
- *   - Calls the tree's destroy function for leaf values if provided
- *   - Handles both sibling and child relationships separately
+ * @note This function processes subdirectories first, then leaves, and finally the directory itself.
+ *       It uses depth-first traversal to ensure proper cleanup and calls the tree's destroy function
+ *       for leaf values if provided. It handles both sibling and child relationships separately.
+ *
+ * @warning This function assumes that the directory pointer is valid and not NULL.
  */
 static void destroy_directory(Tree *tree, Directory *dir)
 {
@@ -148,32 +214,43 @@ static void destroy_directory(Tree *tree, Directory *dir)
     free(dir);
 }
 
-/*
- * Creates a new directory node and adds it to the specified parent directory.
+/**
+ * @brief Creates a single directory node in the tree
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   parent - Pointer to the parent directory where the new directory will be added
- *   name - Name of the new directory (must be less than 256 characters)
+ * @param tree Pointer to the tree structure where the directory will be created
+ * @param parent Pointer to the parent directory (NULL for root directory)
+ * @param name Name of the directory to create (must be less than 256 characters)
  *
- * Returns:
- *   Directory* - Pointer to the newly created directory on success
- *               Returns NULL if:
- *               - Any input parameter is NULL
- *               - Name is too long (>= 256 chars)
- *               - A directory with the same name exists in the parent
- *               - Memory allocation fails
+ * @return Directory* Pointer to the newly created directory, or NULL if:
+ *         - Any input parameter is NULL
+ *         - name length >= 256
+ *         - Memory allocation fails
+ *         - A directory with the same name already exists under the parent
+ *         - Attempting to create a root when one already exists
  *
- * Notes:
- *   - Initializes the new directory and sets its parent
- *   - Updates the total directory count in the tree
- *   - If the parent is NULL, the new directory becomes the root
- *   - Ensures that no duplicate directory names exist within the same parent
+ * @note This function:
+ *       - Creates a single directory node
+ *       - Sets up parent-child relationships
+ *       - Updates directory counts
+ *       - Handles both root and child directory creation
+ *
+ * @example
+ *     // Create root directory
+ *     Directory *root = create_directory(tree, NULL, "root");
+ *     // Create child directory
+ *     Directory *child = create_directory(tree, root, "child");
  */
+
 Directory *create_directory(Tree *tree, Directory *parent, const char *name)
 {
     if (tree == NULL || name == NULL || strlen(name) >= 256)
         return NULL;
+
+    // Check for existing directory with same name
+    if (parent != NULL && find_child_directory(parent, name) != NULL)
+    {
+        return NULL;
+    }
 
     Directory *new_dir = (Directory *)malloc(sizeof(Directory));
     if (new_dir == NULL)
@@ -184,13 +261,13 @@ Directory *create_directory(Tree *tree, Directory *parent, const char *name)
     strncpy(new_dir->base.name, name, 255);
     new_dir->base.parent = (Node *)parent;
 
-    // If this is the root directory
+    // Handle root directory
     if (parent == NULL)
     {
         if (tree->root != NULL)
         {
             free(new_dir);
-            return NULL; // Root already exists
+            return NULL;
         }
         new_dir->base.tag = TREE_TAG_ROOT;
         tree->root = new_dir;
@@ -209,17 +286,7 @@ Directory *create_directory(Tree *tree, Directory *parent, const char *name)
             Directory *curr = parent->first_child;
             while (curr->next_dir != NULL)
             {
-                if (strcmp(curr->base.name, name) == 0)
-                {
-                    free(new_dir);
-                    return NULL; // Directory with same name exists
-                }
                 curr = curr->next_dir;
-            }
-            if (strcmp(curr->base.name, name) == 0)
-            {
-                free(new_dir);
-                return NULL;
             }
             curr->next_dir = new_dir;
         }
@@ -230,22 +297,165 @@ Directory *create_directory(Tree *tree, Directory *parent, const char *name)
     return new_dir;
 }
 
-/*
- * Removes a directory from the tree and its contents.
+/**
+ * @brief Creates a nested directory path, creating intermediate directories as needed
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   dir - Pointer to the directory to be removed
+ * @param tree Pointer to the tree structure where the directories will be created
+ * @param path Full path of directories to create (e.g., "/hello/world")
  *
- * Returns:
- *   int - 0 on success, -1 if the tree or directory is NULL, or if the directory is the root with children
+ * @return Directory* Pointer to the last directory in the path, or NULL if:
+ *         - Any input parameter is NULL
+ *         - Path is empty
+ *         - Memory allocation fails
+ *         - Path component name >= 256 characters
+ *         - Invalid path format
  *
- * Notes:
- *   - Cannot remove the root directory if it has children or leaves
- *   - Updates the parent's child list and directory count
- *   - Recursively destroys the directory and all its contents
- *   - Decreases the total directory count in the tree
+ * @note This function:
+ *       - Splits the path into components
+ *       - Creates or finds each directory in the path
+ *       - Creates missing intermediate directories
+ *       - Returns existing directories if they already exist
+ *       - Properly handles absolute paths (starting with /)
+ *
+ * @example
+ *     // Create nested directories
+ *     Directory *dir = create_nested_directory(tree, "/hello/world");
+ *     // Creates:
+ *     // /
+ *     // └── hello/
+ *     //     └── world/
+ *
+ * @warning
+ *     - Path components must be separated by '/'
+ *     - Each path component must be < 256 characters
+ *     - Memory for path components is freed before returning
  */
+Directory *create_nested_directory(Tree *tree, const char *path)
+{
+    if (tree == NULL || path == NULL || strlen(path) == 0)
+        return NULL;
+
+    int count;
+    char **components = split_path(path, &count);
+    if (!components)
+        return NULL;
+
+    Directory *current = tree->root;
+    // Directory *parent = NULL;
+
+    for (int i = 0; i < count; i++)
+    {
+        if (strlen(components[i]) == 0)
+            continue; // Skip empty components
+
+        if (i == 0)
+        {
+            // Handle root level
+            if (current == NULL)
+            {
+                current = create_directory(tree, NULL, components[i]);
+            }
+            else
+            {
+                Directory *found = find_child_directory(current, components[i]);
+                if (!found)
+                {
+                    current = create_directory(tree, current, components[i]);
+                }
+                else
+                {
+                    current = found;
+                }
+            }
+        }
+        else
+        {
+            // Handle nested directories
+            Directory *found = find_child_directory(current, components[i]);
+            if (!found)
+            {
+                found = create_directory(tree, current, components[i]);
+            }
+            if (!found)
+            {
+                free_path_components(components, count);
+                return NULL;
+            }
+            current = found;
+        }
+
+        if (!current)
+        {
+            free_path_components(components, count);
+            return NULL;
+        }
+    }
+
+    free_path_components(components, count);
+    return current;
+}
+
+/**
+ * @brief Searches for a directory in the tree based on the specified path.
+ *
+ * @param tree Pointer to the tree structure where the search will be performed
+ * @param path A string representing the full path of the directory to search for
+ *
+ * @return Directory* Pointer to the found directory if it exists, or NULL if:
+ *         - Any input parameter is NULL
+ *         - The path is empty
+ *         - The directory is not found in the tree
+ *
+ * @note This function splits the input path into components to handle nested directories.
+ *       It iterates through each component, searching for the corresponding directory.
+ *       If any component is not found, the function returns NULL.
+ *       The search is case-sensitive and traverses the tree structure recursively.
+ */
+
+Directory *find_directory(Tree *tree, const char *path)
+{
+    if (!tree || !path || strlen(path) == 0)
+        return NULL;
+
+    int count;
+    char **components = split_path(path, &count);
+    if (!components)
+        return NULL;
+
+    Directory *current = tree->root;
+
+    // Skip first component if it's empty (happens with leading /)
+    int start = (strlen(components[0]) == 0) ? 1 : 0;
+
+    for (int i = start; i < count; i++)
+    {
+        if (!current)
+        {
+            free_path_components(components, count);
+            return NULL;
+        }
+        current = find_child_directory(current, components[i]);
+    }
+
+    free_path_components(components, count);
+    return current;
+}
+
+/**
+ * @brief Removes a directory from the tree and its contents.
+ *
+ * @param tree Pointer to the tree structure
+ * @param dir Pointer to the directory to be removed
+ *
+ * @return int - 0 on success, or -1 if:
+ *         - The tree or directory is NULL
+ *         - The directory is the root with children
+ *
+ * @note This function cannot remove the root directory if it has children or leaves.
+ *       It updates the parent's child list and directory count, recursively destroys
+ *       the directory and all its contents, and decreases the total directory count in the tree.
+ */
+
 int remove_directory(Tree *tree, Directory *dir)
 {
     if (tree == NULL || dir == NULL)
@@ -281,79 +491,24 @@ int remove_directory(Tree *tree, Directory *dir)
     return 0;
 }
 
-/*
- * Recursively searches for a directory in the tree or subtree.
+/**
+ * @brief Creates a new leaf (file) node and adds it to the specified parent directory.
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   start - Pointer to the directory from which to start the search
- *   name - The name of the directory to search for
+ * @param tree Pointer to the tree structure
+ * @param parent Pointer to the parent directory where the leaf will be added
+ * @param name Name of the new leaf (must be less than 256 characters)
+ * @param value Pointer to the leaf's data value
+ * @param size Size of the leaf in bytes
  *
- * Returns:
- *   Directory* - Pointer to the found directory if it exists
- *               Returns NULL if the tree is NULL, name is NULL, or if the directory is not found
+ * @return Leaf* Pointer to the newly created leaf on success, or NULL if:
+ *         - Any input parameter is NULL
+ *         - Name is too long (>= 256 chars)
+ *         - A file with the same name exists in parent
+ *         - Memory allocation fails
  *
- * Notes:
- *   - If 'start' is NULL, the search begins from the root of the tree
- *   - First checks if the current directory matches the search name
- *   - If not found, it recursively searches in all child directories
- *   - The search is case-sensitive
- */
-Directory *find_directory(Tree *tree, Directory *start, const char *name)
-{
-    if (tree == NULL || name == NULL)
-        return NULL;
-
-    // If start is NULL, begin from root
-    Directory *curr = start ? start : tree->root;
-
-    // Check if current directory matches
-    if (strcmp(curr->base.name, name) == 0)
-        return curr;
-
-    // Search in children
-    Directory *child = curr->first_child;
-    while (child != NULL)
-    {
-        Directory *result = find_directory(tree, child, name);
-        if (result != NULL)
-            return result;
-        child = child->next_dir;
-    }
-
-    return NULL;
-}
-
-Directory *get_parent_directory(Directory *dir)
-{
-    if (dir == NULL || dir->base.parent == NULL)
-        return NULL;
-    return (Directory *)dir->base.parent;
-}
-
-/*
- * Creates a new leaf (file) node and adds it to the specified parent directory.
- *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   parent - Pointer to the parent directory where the leaf will be added
- *   name - Name of the new leaf (must be less than 256 characters)
- *   value - Pointer to the leaf's data value
- *   size - Size of the leaf in bytes
- *
- * Returns:
- *   Leaf* - Pointer to the newly created leaf on success
- *          Returns NULL if:
- *          - Any input parameter is NULL
- *          - Name is too long (>= 256 chars)
- *          - A file with the same name exists in parent
- *          - Memory allocation fails
- *
- * Notes:
- *   - Updates total size of parent directory and all ancestors
- *   - Adds leaf to end of parent's leaf list
- *   - Initializes all leaf fields including base node properties
- *   - Name is copied into leaf with null termination
+ * @note This function updates the total size of the parent directory and all ancestors,
+ *       adds the leaf to the end of the parent's leaf list, initializes all leaf fields
+ *       including base node properties, and copies the name into the leaf with null termination.
  */
 Leaf *create_leaf(Tree *tree, Directory *parent, const char *name, void *value, uint16_t size)
 {
@@ -409,20 +564,19 @@ Leaf *create_leaf(Tree *tree, Directory *parent, const char *name, void *value, 
     return new_leaf;
 }
 
-/*
- * Removes a leaf (file) from the tree and updates the necessary size totals.
+/**
+ * @brief Removes a leaf (file) from the tree and updates the necessary size totals.
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   leaf - Pointer to the leaf (file) to be removed
+ * @param tree Pointer to the tree structure
+ * @param leaf Pointer to the leaf (file) to be removed
  *
- * Returns:
- *   int - 0 on success, -1 if the tree or leaf is NULL, or if the leaf has no parent
+ * @return int - 0 on success, or -1 if:
+ *         - The tree or leaf is NULL
+ *         - The leaf has no parent
  *
- * Notes:
- *   - The function updates the total size of the parent directory and the tree
- *   - If the leaf has a value and a destroy function is provided, it calls the destroy function on the value
- *   - The leaf is freed after removal from the parent's list
+ * @note This function updates the total size of the parent directory and the tree.
+ *       If the leaf has a value and a destroy function is provided, it calls the destroy
+ *       function on the value. The leaf is freed after removal from the parent's list.
  */
 int remove_leaf(Tree *tree, Leaf *leaf)
 {
@@ -464,24 +618,22 @@ int remove_leaf(Tree *tree, Leaf *leaf)
     free(leaf);
     return 0;
 }
-
-/*
- * Recursively searches for a leaf (file) in the tree or subtree.
+/**
+ * @brief Recursively searches for a leaf (file) in the tree or subtree.
  *
- * Parameters:
- *   tree - Pointer to the tree structure
- *   start - Pointer to the directory from which to start the search
- *   name - The name of the leaf to search for
+ * @param tree Pointer to the tree structure
+ * @param start Pointer to the directory from which to start the search
+ * @param name The name of the leaf to search for
  *
- * Returns:
- *   Leaf* - Pointer to the found leaf if it exists
- *           Returns NULL if the tree is NULL, name is NULL, or if the leaf is not found
+ * @return Leaf* Pointer to the found leaf if it exists, or NULL if:
+ *         - The tree is NULL
+ *         - Name is NULL
+ *         - The leaf is not found
  *
- * Notes:
- *   - If 'start' is NULL, the search begins from the root of the tree
- *   - First searches in the leaves of the current directory
- *   - If not found, it recursively searches in all child directories
- *   - The search is case-sensitive
+ * @note If 'start' is NULL, the search begins from the root of the tree.
+ *       The function first searches in the leaves of the current directory,
+ *       and if not found, it recursively searches in all child directories.
+ *       The search is case-sensitive.
  */
 Leaf *find_leaf(Tree *tree, Directory *start, const char *name)
 {
@@ -514,73 +666,19 @@ Leaf *find_leaf(Tree *tree, Directory *start, const char *name)
     return NULL;
 }
 
-/*
- * Constructs the full path of a node by concatenating all parent directory names.
+/**
+ * @brief Recursively counts the total number of files (leaves) in the tree or subtree.
  *
- * Parameters:
- *   node - Pointer to the node (can be either directory or file)
+ * @param tree Pointer to the tree structure
  *
- * Returns:
- *   char* - Dynamically allocated string containing the full path
- *          Returns NULL if node is NULL or if memory allocation fails
+ * @return uint32_t Total number of files (leaves) in the tree, or 0 if:
+ *         - The tree is NULL
+ *         - The tree is empty
  *
- * Notes:
- *   - Traverses up the tree from node to root
- *   - Builds path in format: "root/parent/child"
- *   - Uses two passes: first to calculate length, second to build path
- *   - Caller is responsible for freeing the returned string
- *   - No leading slash is added to the path
- */
-char *get_node_path(Node *node)
-{
-    if (node == NULL)
-        return NULL;
-
-    size_t len = 0;
-    Node *curr = node;
-    while (curr != NULL)
-    {
-        len += strlen(curr->name) + 1; // +1 for slash
-        curr = curr->parent;
-    }
-
-    char *path = (char *)malloc(len + 1); // +1 for null terminator
-    if (path == NULL)
-        return NULL;
-
-    path[len] = '\0';
-    curr = node;
-
-    while (curr != NULL)
-    {
-        size_t name_len = strlen(curr->name);
-        len -= name_len;
-        memcpy(path + len, curr->name, name_len);
-        if (len > 0)
-        {
-            len--;
-            path[len] = '/';
-        }
-        curr = curr->parent;
-    }
-    return path;
-}
-
-/*
- * Recursively counts the total number of files (leaves) in the tree or subtree.
- *
- * Parameters:
- *   tree - Pointer to the tree structure
- *
- * Returns:
- *   uint32_t - Total number of files (leaves) in the tree
- *              Returns 0 if tree is NULL or empty
- *
- * Notes:
- *   - Traverses the entire tree structure recursively
- *   - For each directory, counts its immediate files
- *   - Creates temporary subtrees to count files in child directories
- *   - Maintains original tree function pointers during recursion
+ * @note This function traverses the entire tree structure recursively.
+ *       For each directory, it counts its immediate files and creates temporary
+ *       subtrees to count files in child directories. It maintains original tree
+ *       function pointers during recursion.
  */
 uint32_t get_total_files(Tree *tree)
 {
@@ -613,60 +711,4 @@ uint32_t get_total_files(Tree *tree)
         child = child->next_dir;
     }
     return count;
-}
-
-void print_node_info(Node *node, int depth)
-{
-    if (node == NULL)
-        return;
-
-    // Print indentation
-    for (int i = 0; i < depth; i++)
-    {
-        printf("  ");
-    }
-
-    if (is_directory(node))
-    {
-        Directory *dir = (Directory *)node;
-        printf("📁 %s/ (size: %u)\n", node->name, get_directory_size(dir));
-
-        // Print leaves first
-        Leaf *leaf = dir->first_leaf;
-        while (leaf != NULL)
-        {
-            print_node_info((Node *)leaf, depth + 1);
-            leaf = leaf->next_leaf;
-        }
-
-        // Then print subdirectories
-        Directory *child = dir->first_child;
-        while (child != NULL)
-        {
-            print_node_info((Node *)child, depth + 1);
-            child = child->next_dir;
-        }
-    }
-    else if (is_leaf(node))
-    {
-        Leaf *leaf = (Leaf *)node;
-        printf("📄 %s (size: %u)\n", node->name, leaf->size);
-    }
-}
-
-void print_tree(Tree *tree)
-{
-    if (tree == NULL || tree->root == NULL)
-    {
-        printf("Empty tree\n");
-        return;
-    }
-
-    printf("\nDirectory Tree:\n");
-    printf("Total size: %u bytes\n", get_total_size(tree));
-    printf("Total directories: %u\n", get_total_directories(tree));
-    printf("Total files: %u\n\n", get_total_files(tree));
-
-    print_node_info((Node *)tree->root, 0);
-    printf("\n");
 }

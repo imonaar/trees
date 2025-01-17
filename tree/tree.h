@@ -50,38 +50,33 @@ struct Tree
     void (*destroy)(void *);
     int (*compare)(void *, void *);
 };
-
-// Tree initialization and cleanup
+// Tree Management
 void init_tree(Tree *tree, int (*compare)(void *key1, void *key2), void (*destroy)(void *data));
 void destroy_tree(Tree *tree);
 
-// Directory operations
+// Directory Operations
 Directory *create_directory(Tree *tree, Directory *parent, const char *name);
+Directory *create_nested_directory(Tree *tree, const char *path);
 int remove_directory(Tree *tree, Directory *dir);
-Directory *find_directory(Tree *tree, Directory *start, const char *name);
-Directory *get_parent_directory(Directory *dir);
+Directory *find_directory(Tree *tree, const char *path);
 
-// File (Leaf) operations
+// File Operations
 Leaf *create_leaf(Tree *tree, Directory *parent, const char *name, void *value, uint16_t size);
 int remove_leaf(Tree *tree, Leaf *leaf);
 Leaf *find_leaf(Tree *tree, Directory *start, const char *name);
 
-// Tree traversal and information
-void traverse_tree(Tree *tree, void (*callback)(Node *node, void *user_data), void *user_data);
+// Node Information
+bool is_directory(Node *node);
+bool is_leaf(Node *node);
+const char *get_node_name(Node *node);
+char *get_node_path(Node *node);
+Directory *get_parent_directory(Directory *dir);
+
+// Tree Statistics
 uint32_t get_directory_size(Directory *dir);
 uint32_t get_total_size(Tree *tree);
 uint16_t get_directory_count(Directory *dir);
 uint32_t get_total_directories(Tree *tree);
 uint32_t get_total_files(Tree *tree);
-
-// Path-based operations
-Node *get_node_by_path(Tree *tree, const char *path);
-char *get_node_path(Node *node);
-
-// Utility functions
-bool is_directory(Node *node);
-bool is_leaf(Node *node);
-const char *get_node_name(Node *node);
-void print_tree(Tree *tree);
 
 #endif
